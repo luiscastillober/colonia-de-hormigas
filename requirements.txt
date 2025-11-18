@@ -1,0 +1,22 @@
+# Core dependencies para Dash
+dash==2.14.2
+dash-bootstrap-components==1.5.0
+plotly==5.18.0
+
+# Dependencias para mapas y grafos
+osmnx==1.9.1
+networkx==3.2.1
+geopandas==0.14.2
+
+# Procesamiento de datos
+numpy==1.26.3
+pandas==2.1.4
+
+# Visualización adicional
+matplotlib==3.8.2
+
+# Utilidades
+python-dateutil==2.8.2
+
+# Opcional: Para mejor rendimiento
+gunicorn==21.2.0  # Para deployment en producción
