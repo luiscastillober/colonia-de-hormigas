@@ -9,26 +9,25 @@ import numpy as np
 try:
     import osmnx as ox
     import networkx as nx
-
     OSMNX_AVAILABLE = True
 except ImportError:
     OSMNX_AVAILABLE = False
 
 
 class EnhancedCityMap:
-    """Versión MEJORADA del mapa con mejores visualizaciones y controles"""
+    """Versión MEJORADA del mapa con corrección de errores de hashable"""
 
     def __init__(self):
         self.intersections = {}
         self.roads = {}
         self.one_way_streets = set()
         self.blocked_roads = set()
-        self.high_traffic_roads = set()  # Nuevo: calles con alto tráfico
+        self.high_traffic_roads = set()
         self.graph = None
         self.node_mapping = {}
         self.reverse_mapping = {}
-        self.selected_nodes = set()  # Para selección visual
-        self.hover_node = None  # Nodo bajo el mouse
+        self.selected_nodes = set()
+        self.hover_node = None
 
     def load_city_from_osm(self, place_name: str, network_type: str = 'drive'):
         """Cargar mapa con mejor procesamiento"""
@@ -60,12 +59,12 @@ class EnhancedCityMap:
             raise Exception(f"No se pudo cargar el mapa: {e}")
 
     def load_city_from_point(self, lat: float, lon: float, dist: int = 1000):
-        """Cargar mapa desde coordenadas específicas - MÉTODO NUEVO"""
+        """Cargar mapa desde coordenadas específicas"""
         if not OSMNX_AVAILABLE:
             raise ImportError("OSMnx no está disponible")
 
         try:
-            print(f"📍 Cargando mapa alrededor de ({lat}, {lon})...")
+            print(f"🔍 Cargando mapa alrededor de ({lat}, {lon})...")
 
             self.graph = ox.graph_from_point(
                 (lat, lon),
@@ -79,7 +78,7 @@ class EnhancedCityMap:
             raise Exception(f"No se pudo cargar el mapa desde coordenadas: {str(e)}")
 
     def _process_enhanced_graph(self):
-        """Procesamiento MEJORADO del grafo"""
+        """Procesamiento MEJORADO del grafo con corrección de tipos"""
         if self.graph is None:
             return
 
@@ -102,19 +101,29 @@ class EnhancedCityMap:
             self.intersections[idx] = {
                 'coords': (x, y),
                 'osm_id': osm_id,
-                'degree': self.graph.degree(osm_id),  # Número de conexiones
-                'is_important': self.graph.degree(osm_id) > 2  # Nodo importante
+                'degree': self.graph.degree(osm_id),
+                'is_important': self.graph.degree(osm_id) > 2
             }
 
-        # Procesar calles con MÁS METADATOS
+        # Procesar calles con MÁS METADATOS y CORRECCIÓN DE TIPOS
         for u, v, key, data in self.graph.edges(keys=True, data=True):
             start_id = self.node_mapping[u]
             end_id = self.node_mapping[v]
 
             length = data.get('length', 50.0)
             oneway = data.get('oneway', False)
+            
+            # ✅ CORRECCIÓN: Manejar highway_type que puede ser lista
             highway_type = data.get('highway', 'unclassified')
+            if isinstance(highway_type, list):
+                highway_type = highway_type[0] if highway_type else 'unclassified'
+            
+            # ✅ CORRECCIÓN: Manejar name que puede ser lista
             name = data.get('name', 'Sin nombre')
+            if isinstance(name, list):
+                name = ', '.join(str(n) for n in name) if name else 'Sin nombre'
+            elif not isinstance(name, str):
+                name = str(name) if name else 'Sin nombre'
 
             # Calcular importancia de la calle
             importance = self._calculate_road_importance(highway_type, length)
@@ -137,7 +146,7 @@ class EnhancedCityMap:
                 self.one_way_streets.add((start_id, end_id))
             else:
                 # Crear calle bidireccional
-                self.roads[(end_id, start_id)] = road_data
+                self.roads[(end_id, start_id)] = road_data.copy()
 
     def _calculate_road_importance(self, highway_type: str, length: float) -> int:
         """Calcular importancia de la calle para visualización"""
@@ -215,7 +224,7 @@ class EnhancedCityMap:
 
     def _haversine_distance(self, lon1: float, lat1: float, lon2: float, lat2: float) -> float:
         """Calcular distancia haversine entre dos puntos"""
-        from math import radians, sin, cos, sqrt, atan2  # IMPORTS AÑADIDOS
+        from math import radians, sin, cos, sqrt, atan2
         R = 6371000  # Radio de la Tierra en metros
 
         lat1_rad = radians(lat1)
@@ -263,252 +272,6 @@ class EnhancedCityMap:
             'connected_roads': roads_info
         }
 
-    def visualize_enhanced_map(self,
-                               vehicles: List = None,
-                               title: str = "Mapa de Tráfico Mejorado",
-                               show_ids: bool = True,
-                               highlight_nodes: List[int] = None,
-                               show_road_names: bool = False,
-                               figsize: Tuple[int, int] = (14, 12)):
-        """Visualización MEJORADA del mapa"""
-        if not self.graph:
-            return None
-
-        try:
-            fig, ax = plt.subplots(figsize=figsize)
-
-            # Configurar estilo profesional
-            plt.style.use('default')
-            ax.set_facecolor('#f8f9fa')
-
-            # 1. DIBUJAR CALLES POR IMPORTANCIA
-            self._draw_streets_by_importance(ax)
-
-            # 2. DIBUJAR CALLES BLOQUEADAS
-            self._draw_blocked_streets(ax)
-
-            # 3. DIBUJAR CALLES CON TRÁFICO
-            self._draw_traffic_streets(ax)
-
-            # 4. DIBUJAR NODOS MEJORADOS
-            self._draw_enhanced_nodes(ax, show_ids, highlight_nodes)
-
-            # 5. DIBUJAR RUTAS DE VEHÍCULOS
-            if vehicles:
-                self._draw_vehicle_routes(ax, vehicles)
-
-            # 6. DIBUJAR NOMBRES DE CALLES (opcional)
-            if show_road_names:
-                self._draw_road_names(ax)
-
-            # Configurar título y leyenda
-            ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-            self._create_legend(ax)
-
-            # Mejorar aspecto general
-            ax.tick_params(axis='both', which='major', labelsize=10)
-            plt.tight_layout()
-
-            return fig
-
-        except Exception as e:
-            print(f"Error en visualización mejorada: {e}")
-            return None
-
-    def _draw_streets_by_importance(self, ax):
-        """Dibujar calles clasificadas por importancia"""
-        if not self.graph:
-            return
-
-        # Dibujar todas las calles base en gris claro
-        ox.plot_graph(self.graph, ax=ax, node_size=0, edge_linewidth=0.8,
-                      edge_color='lightgray', show=False, close=False)
-
-    def _get_highway_color(self, highway_type: str) -> str:
-        """Obtener color según tipo de calle"""
-        color_map = {
-            'motorway': '#FF6B6B',
-            'trunk': '#FFA726',
-            'primary': '#4ECDC4',
-            'secondary': '#45B7D1',
-            'tertiary': '#96CEB4'
-        }
-        return color_map.get(highway_type, '#CCCCCC')
-
-    def _draw_blocked_streets(self, ax):
-        """Dibujar calles bloqueadas"""
-        for (start, end) in self.blocked_roads:
-            if start in self.reverse_mapping and end in self.reverse_mapping:
-                try:
-                    start_osm = self.reverse_mapping[start]
-                    end_osm = self.reverse_mapping[end]
-                    x1, y1 = self.graph.nodes[start_osm]['x'], self.graph.nodes[start_osm]['y']
-                    x2, y2 = self.graph.nodes[end_osm]['x'], self.graph.nodes[end_osm]['y']
-
-                    # Línea roja gruesa con patrón
-                    ax.plot([x1, x2], [y1, y2], 'r-', linewidth=4, alpha=0.7,
-                            dash_capstyle='round', zorder=3,
-                            label='Bloqueada' if start == list(self.blocked_roads)[0][0] else "")
-                except KeyError:
-                    continue
-
-    def _draw_traffic_streets(self, ax):
-        """Dibujar calles con tráfico"""
-        for (start, end) in self.high_traffic_roads:
-            if start in self.reverse_mapping and end in self.reverse_mapping:
-                try:
-                    start_osm = self.reverse_mapping[start]
-                    end_osm = self.reverse_mapping[end]
-                    x1, y1 = self.graph.nodes[start_osm]['x'], self.graph.nodes[start_osm]['y']
-                    x2, y2 = self.graph.nodes[end_osm]['x'], self.graph.nodes[end_osm]['y']
-
-                    # Línea naranja para tráfico
-                    ax.plot([x1, x2], [y1, y2], color='orange', linewidth=3,
-                            alpha=0.6, zorder=2,
-                            label='Tráfico Alto' if start == list(self.high_traffic_roads)[0][0] else "")
-                except KeyError:
-                    continue
-
-    def _draw_enhanced_nodes(self, ax, show_ids: bool, highlight_nodes: List[int]):
-        """Dibujar nodos con visualización mejorada"""
-        if not self.intersections:
-            return
-
-        # Dibujar nodos normales
-        normal_nodes = []
-        important_nodes = []
-        highlighted_nodes = []
-
-        for node_id, node_data in self.intersections.items():
-            x, y = node_data['coords']
-
-            if highlight_nodes and node_id in highlight_nodes:
-                highlighted_nodes.append((x, y, node_id))
-            elif node_data['is_important']:
-                important_nodes.append((x, y, node_id))
-            else:
-                normal_nodes.append((x, y, node_id))
-
-        # Dibujar nodos normales (pequeños, grises)
-        if normal_nodes:
-            xs, ys, _ = zip(*normal_nodes)
-
-        # Dibujar nodos importantes (medianos, azules)
-        if important_nodes:
-            xs, ys, _ = zip(*important_nodes)
-
-        # Dibujar nodos destacados (grandes, verdes)
-        if highlighted_nodes:
-            xs, ys, node_ids = zip(*highlighted_nodes)
-
-            # Mostrar IDs de nodos destacados SIEMPRE
-            for x, y, node_id in highlighted_nodes:
-                ax.annotate(str(node_id), (x, y), xytext=(5, 5),
-                            textcoords='offset points', fontsize=8, fontweight='bold',
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="lime", alpha=0.8),
-                            zorder=7)
-
-        # Mostrar IDs de nodos importantes si está activado
-        if show_ids and important_nodes:
-            for x, y, node_id in important_nodes[:50]:  # Limitar para rendimiento
-                ax.annotate(str(node_id), (x, y), xytext=(2, 2),
-                            textcoords='offset points', fontsize=6, alpha=0.7,
-                            bbox=dict(boxstyle="round,pad=0.2", facecolor="yellow", alpha=0.5),
-                            zorder=5)
-
-    def _draw_vehicle_routes(self, ax, vehicles: List):
-        """Dibujar rutas de vehículos mejoradas"""
-        colors = plt.cm.Set3(np.linspace(0, 1, len(vehicles)))
-
-        for idx, vehicle in enumerate(vehicles):
-            color = colors[idx]
-
-            if len(vehicle.path) > 1:
-                path_coords = []
-                for node_id in vehicle.path:
-                    if node_id in self.reverse_mapping:
-                        try:
-                            osm_id = self.reverse_mapping[node_id]
-                            x = self.graph.nodes[osm_id]['x']
-                            y = self.graph.nodes[osm_id]['y']
-                            path_coords.append((x, y))
-                        except KeyError:
-                            continue
-
-                if len(path_coords) > 1:
-                    xs, ys = zip(*path_coords)
-
-                    # Línea principal
-                    ax.plot(xs, ys, color=color, linewidth=3, alpha=0.8,
-                            label=f'Vehículo {idx + 1}', zorder=4)
-
-                    # Puntos en cada nodo de la ruta
-                    ax.scatter(xs, ys, color=color, s=30, alpha=0.9, zorder=5)
-
-                    # Flecha indicando dirección
-                    if len(xs) >= 2:
-                        mid_idx = len(xs) // 2
-                        dx = xs[mid_idx + 1] - xs[mid_idx]
-                        dy = ys[mid_idx + 1] - ys[mid_idx]
-                        ax.arrow(xs[mid_idx], ys[mid_idx], dx * 0.3, dy * 0.3,
-                                 head_width=0.0002, head_length=0.0003,
-                                 fc=color, ec=color, alpha=0.8, zorder=6)
-
-    def _draw_road_names(self, ax):
-        """Dibujar nombres de calles importantes"""
-        drawn_names = set()
-
-        for (start, end), road_data in self.roads.items():
-            if road_data.get('is_major_road', False) and road_data.get('name') and road_data['name'] != 'Sin nombre':
-                if start in self.reverse_mapping and end in self.reverse_mapping:
-                    try:
-                        start_osm = self.reverse_mapping[start]
-                        end_osm = self.reverse_mapping[end]
-                        x1, y1 = self.graph.nodes[start_osm]['x'], self.graph.nodes[start_osm]['y']
-                        x2, y2 = self.graph.nodes[end_osm]['x'], self.graph.nodes[end_osm]['y']
-
-                        # Posición media para el texto
-                        mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-
-                        name = road_data['name']
-                        if name not in drawn_names:
-                            ax.text(mid_x, mid_y, name, fontsize=7, alpha=0.7,
-                                    bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.8),
-                                    ha='center', va='center', rotation=45, zorder=3)
-                            drawn_names.add(name)
-                    except KeyError:
-                        continue
-
-    def _create_legend(self, ax):
-        """Crear leyenda mejorada"""
-        from matplotlib.lines import Line2D
-
-        legend_elements = [
-            Line2D([0], [0], color='red', linewidth=4, label='Calle Bloqueada'),
-            Line2D([0], [0], color='orange', linewidth=3, label='Tráfico Alto'),
-        ]
-
-        ax.legend(handles=legend_elements, loc='upper right',
-                  framealpha=0.9, fancybox=True, shadow=True)
-
-    # ================= MÉTODOS DE COMPATIBILIDAD =================
-
-    def block_road(self, start: int, end: int):
-        """Mantener compatibilidad con código existente"""
-        self.blocked_roads.add((start, end))
-
-    def add_traffic_to_road(self, start: int, end: int, traffic_factor: float = 2.0):
-        """Mantener compatibilidad con código existente"""
-        if (start, end) in self.roads:
-            self.roads[(start, end)]['traffic'] = traffic_factor
-            self.high_traffic_roads.add((start, end))
-
-    def visualize_on_map(self, vehicles=None, title="Mapa de Tráfico", show_ids=False):
-        """Mantener compatibilidad con llamadas existentes"""
-        return self.visualize_enhanced_map(vehicles, title, show_ids)
-
-    # ================= MÉTODOS BÁSICOS =================
-
     def get_neighbors(self, intersection: int) -> List[int]:
         neighbors = []
         for (start, end) in self.roads:
@@ -533,135 +296,13 @@ class EnhancedCityMap:
 
         return base_time * traffic_factor
 
-    def visualize_interactive_map(self,
-                                  vehicles: List = None,
-                                  title: str = "Mapa Interactivo - Selecciona Nodos",
-                                  selected_nodes: Dict[str, int] = None,
-                                  show_road_names: bool = False,
-                                  figsize: Tuple[int, int] = (14, 12)):
-        """Visualización INTERACTIVA para seleccionar nodos del mapa"""
-        if not self.graph:
-            return None
+    # MÉTODOS DE COMPATIBILIDAD
+    def block_road(self, start: int, end: int):
+        """Mantener compatibilidad con código existente"""
+        self.blocked_roads.add((start, end))
 
-        try:
-            fig, ax = plt.subplots(figsize=figsize)
-            plt.style.use('default')
-            ax.set_facecolor('#f8f9fa')
-
-            # 1. DIBUJAR CALLES TODAS EN GRIS
-            ox.plot_graph(self.graph, ax=ax, node_size=0, edge_linewidth=1.0,
-                          edge_color='lightgray', show=False, close=False)
-
-            # 2. DIBUJAR CALLES BLOQUEADAS
-            self._draw_blocked_streets(ax)
-
-            # 3. DIBUJAR CALLES CON TRÁFICO
-            self._draw_traffic_streets(ax)
-
-            # 4. DIBUJAR RUTAS DE VEHÍCULOS
-            if vehicles:
-                self._draw_vehicle_routes(ax, vehicles)
-
-            # 5. DIBUJAR NODOS SELECCIONADOS
-            if selected_nodes:
-                self._draw_selected_nodes(ax, selected_nodes)
-
-            # 6. DIBUJAR TODOS LOS NODOS COMO PUNTOS PEQUEÑOS PARA SELECCIÓN
-            self._draw_all_nodes_for_selection(ax)
-
-            # 7. DIBUJAR NOMBRES DE CALLES (opcional)
-            if show_road_names:
-                self._draw_road_names(ax)
-
-            ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-            self._create_interactive_legend(ax, selected_nodes)
-            ax.tick_params(axis='both', which='major', labelsize=10)
-            plt.tight_layout()
-
-            return fig
-
-        except Exception as e:
-            print(f"Error en visualización interactiva: {e}")
-            return None
-
-    def _draw_selected_nodes(self, ax, selected_nodes: Dict[str, int]):
-        """Dibujar nodos seleccionados con colores específicos"""
-        node_colors = {
-            'start': 'lime',
-            'end': 'red',
-            'blocked': 'darkred',
-            'traffic': 'orange'
-        }
-
-        node_labels = {
-            'start': 'Inicio',
-            'end': 'Destino',
-            'blocked': 'Bloqueado',
-            'traffic': 'Tráfico'
-        }
-
-        for node_type, node_id in selected_nodes.items():
-            if node_id in self.intersections:
-                node_data = self.intersections[node_id]
-                x, y = node_data['coords']
-                color = node_colors.get(node_type, 'blue')
-                label = node_labels.get(node_type, 'Seleccionado')
-
-                ax.scatter(x, y, color=color, s=150, alpha=1.0, zorder=20,
-                           edgecolors='black', linewidth=2.5, marker='o' if node_type in ['start', 'end'] else 's')
-
-                # Etiqueta del nodo
-                ax.annotate(f"{label}\nID: {node_id}", (x, y), xytext=(10, 10),
-                            textcoords='offset points', fontsize=9, fontweight='bold',
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9),
-                            zorder=21)
-
-    def _draw_all_nodes_for_selection(self, ax):
-        """Dibujar todos los nodos como puntos pequeños para selección"""
-        all_coords = []
-        all_ids = []
-
-        for node_id, node_data in self.intersections.items():
-            x, y = node_data['coords']
-            all_coords.append((x, y))
-            all_ids.append(node_id)
-
-        if all_coords:
-            xs, ys = zip(*all_coords)
-            # Puntos muy pequeños y transparentes, pero clickeables
-            ax.scatter(xs, ys, color='blue', s=8, alpha=0.1, zorder=5)
-
-    def _create_interactive_legend(self, ax, selected_nodes: Dict[str, int]):
-        """Crear leyenda para mapa interactivo"""
-        from matplotlib.lines import Line2D
-        from matplotlib.patches import Patch
-
-        legend_elements = [
-            Line2D([0], [0], color='red', linewidth=4, label='Calle Bloqueada'),
-            Line2D([0], [0], color='orange', linewidth=3, label='Tráfico Alto'),
-            Line2D([0], [0], color='lime', marker='o', markersize=10, linewidth=0, label='Inicio'),
-            Line2D([0], [0], color='red', marker='o', markersize=10, linewidth=0, label='Destino'),
-            Line2D([0], [0], color='darkred', marker='s', markersize=8, linewidth=0, label='Nodo Bloqueado'),
-            Line2D([0], [0], color='orange', marker='s', markersize=8, linewidth=0, label='Nodo Tráfico'),
-        ]
-
-        ax.legend(handles=legend_elements, loc='upper right',
-                  framealpha=0.95, fancybox=True, shadow=True, fontsize=9)
-
-    def find_node_by_coords(self, x: float, y: float, tolerance: float = 0.001) -> Optional[int]:
-        """Encontrar nodo más cercano a coordenadas del click"""
-        if not self.intersections:
-            return None
-
-        min_distance = float('inf')
-        closest_node = None
-
-        for node_id, node_data in self.intersections.items():
-            node_x, node_y = node_data['coords']
-            distance = ((node_x - x) ** 2 + (node_y - y) ** 2) ** 0.5
-
-            if distance < min_distance and distance < tolerance:
-                min_distance = distance
-                closest_node = node_id
-
-        return closest_node
+    def add_traffic_to_road(self, start: int, end: int, traffic_factor: float = 2.0):
+        """Mantener compatibilidad con código existente"""
+        if (start, end) in self.roads:
+            self.roads[(start, end)]['traffic'] = traffic_factor
+            self.high_traffic_roads.add((start, end))
