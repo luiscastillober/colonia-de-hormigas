@@ -76,10 +76,38 @@ if 'blocked_roads' not in st.session_state:
     st.session_state.blocked_roads = []
 if 'traffic_areas' not in st.session_state:
     st.session_state.traffic_areas = []
+if 'selection_mode' not in st.session_state:
+    st.session_state.selection_mode = 'none'  # none, start, end, block_start, block_end, traffic
+if 'temp_block_start' not in st.session_state:
+    st.session_state.temp_block_start = None
+if 'temp_block_end' not in st.session_state:
+    st.session_state.temp_block_end = None
+if 'map_refresh' not in st.session_state:
+    st.session_state.map_refresh = 0
 
 # ============================================
 # FUNCIONES AUXILIARES
 # ============================================
+
+def find_nearest_node(city_map, lat, lon, max_distance=0.005):
+    """Encontrar el nodo más cercano a las coordenadas clickeadas"""
+    if not city_map or not city_map.intersections:
+        return None
+    
+    min_distance = float('inf')
+    nearest_node = None
+    
+    for node_id, node_data in city_map.intersections.items():
+        node_lon, node_lat = node_data['coords']
+        
+        # Calcular distancia euclidiana simple (suficiente para distancias cortas)
+        distance = ((node_lat - lat) ** 2 + (node_lon - lon) ** 2) ** 0.5
+        
+        if distance < min_distance and distance < max_distance:
+            min_distance = distance
+            nearest_node = node_id
+    
+    return nearest_node
 
 def create_base_map(city_map):
     """Crear mapa base de Folium con el grafo de la ciudad"""
@@ -227,15 +255,25 @@ def add_traffic_areas_to_map(m, city_map):
     traffic_group.add_to(m)
     return m
 
-def add_nodes_to_map(m, city_map, highlight_nodes=None, show_all=False):
-    """Añadir nodos importantes al mapa (optimizado)"""
+def add_nodes_to_map(m, city_map, highlight_nodes=None, show_all=False, clickable=True):
+    """Añadir nodos importantes al mapa (optimizado y clickeables)"""
     if not city_map:
         return m
     
-    nodes_group = folium.FeatureGroup(name='📍 Intersecciones', show=False)
+    nodes_group = folium.FeatureGroup(name='📍 Intersecciones', show=True)  # Cambiar a True por defecto
     
-    # Solo mostrar nodos importantes o destacados para mejor rendimiento
+    # Si estamos en modo de selección, mostrar MÁS nodos
+    if clickable and st.session_state.get('selection_mode', 'none') != 'none':
+        show_all = True  # Mostrar todos los nodos cuando estamos seleccionando
+    
+    # ✅ AUMENTAR LÍMITE DE NODOS
+    node_count = 0
+    max_nodes = 3000 if not show_all else 5000  # Límite de nodos a mostrar (AUMENTADO)
+    
     for node_id, node_data in city_map.intersections.items():
+        if node_count >= max_nodes:
+            break
+            
         x, y = node_data['coords']
         
         # Determinar si debemos mostrar este nodo
@@ -246,19 +284,35 @@ def add_nodes_to_map(m, city_map, highlight_nodes=None, show_all=False):
         if not show_all and not is_important and not is_highlighted:
             continue
         
-        # Color y tamaño según importancia
+        node_count += 1
+        
+        # Color y tamaño según importancia y estado de selección
         if is_highlighted:
             color = 'red'
-            radius = 8
+            radius = 10
             fill_opacity = 1.0
         elif is_important:
             color = 'blue'
-            radius = 4
-            fill_opacity = 0.6
+            radius = 5
+            fill_opacity = 0.7
         else:
             color = 'lightblue'
-            radius = 2
-            fill_opacity = 0.3
+            radius = 3
+            fill_opacity = 0.5
+        
+        # Crear marcador clickeable
+        popup_html = f"""
+        <div style="font-family: Arial; min-width: 150px;">
+            <b style="color: #2c3e50; font-size: 14px;">🔵 Nodo {node_id}</b><br>
+            <hr style="margin: 5px 0;">
+            <b>Coordenadas:</b><br>
+            Lat: {y:.6f}<br>
+            Lon: {x:.6f}<br>
+            <b>Conexiones:</b> {node_data.get('degree', 0)}<br>
+            <hr style="margin: 5px 0;">
+            <small style="color: #7f8c8d;">Click para seleccionar</small>
+        </div>
+        """
         
         folium.CircleMarker(
             location=[y, x],
@@ -267,9 +321,8 @@ def add_nodes_to_map(m, city_map, highlight_nodes=None, show_all=False):
             fill=True,
             fill_color=color,
             fill_opacity=fill_opacity,
-            popup=f"<b>Nodo {node_id}</b><br>"
-                  f"Conexiones: {node_data.get('degree', 0)}",
-            tooltip=f"Nodo {node_id}"
+            popup=folium.Popup(popup_html, max_width=200),
+            tooltip=f"Nodo {node_id} - Click para seleccionar"
         ).add_to(nodes_group)
     
     nodes_group.add_to(m)
@@ -470,40 +523,101 @@ with st.sidebar:
         if not st.session_state.city_map:
             st.warning("⚠️ Carga un mapa primero")
         else:
-            st.info("💡 Ingresa los IDs de nodos manualmente")
+            st.markdown("### 🎯 Seleccionar Nodos")
             
+            # Modo de selección
             col1, col2 = st.columns(2)
             with col1:
-                start_node = st.number_input(
-                    "Nodo Inicio:",
-                    min_value=0,
-                    max_value=len(st.session_state.city_map.intersections) - 1,
-                    value=0,
-                    key="start_input"
-                )
-            with col2:
-                end_node = st.number_input(
-                    "Nodo Destino:",
-                    min_value=0,
-                    max_value=len(st.session_state.city_map.intersections) - 1,
-                    value=min(10, len(st.session_state.city_map.intersections) - 1),
-                    key="end_input"
-                )
+                if st.button("📍 Seleccionar INICIO", 
+                            use_container_width=True,
+                            type="primary" if st.session_state.selection_mode == 'start' else "secondary"):
+                    st.session_state.selection_mode = 'start'
+                    st.rerun()
             
-            if st.button("➕ Añadir Vehículo", key="add_vehicle"):
-                st.session_state.vehicles.append({
-                    'start': start_node,
-                    'end': end_node
-                })
-                st.success(f"✅ Vehículo añadido: {start_node} → {end_node}")
+            with col2:
+                if st.button("🎯 Seleccionar DESTINO", 
+                            use_container_width=True,
+                            type="primary" if st.session_state.selection_mode == 'end' else "secondary"):
+                    st.session_state.selection_mode = 'end'
+                    st.rerun()
+            
+            # Mostrar modo actual
+            if st.session_state.selection_mode == 'start':
+                st.info("🖱️ Click en el mapa para seleccionar el nodo de INICIO")
+            elif st.session_state.selection_mode == 'end':
+                st.info("🖱️ Click en el mapa para seleccionar el nodo de DESTINO")
+            
+            st.markdown("---")
+            
+            # Inputs manuales (alternativa)
+            with st.expander("✏️ O ingresa IDs manualmente"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    manual_start = st.number_input(
+                        "Nodo Inicio:",
+                        min_value=0,
+                        max_value=len(st.session_state.city_map.intersections) - 1,
+                        value=st.session_state.selected_start if st.session_state.selected_start else 0,
+                        key="manual_start_input"
+                    )
+                with col2:
+                    manual_end = st.number_input(
+                        "Nodo Destino:",
+                        min_value=0,
+                        max_value=len(st.session_state.city_map.intersections) - 1,
+                        value=st.session_state.selected_end if st.session_state.selected_end else min(10, len(st.session_state.city_map.intersections) - 1),
+                        key="manual_end_input"
+                    )
+                
+                if st.button("✅ Usar estos valores", use_container_width=True):
+                    st.session_state.selected_start = manual_start
+                    st.session_state.selected_end = manual_end
+                    st.success(f"Nodos actualizados: {manual_start} → {manual_end}")
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            # Mostrar selección actual
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.session_state.selected_start is not None:
+                    st.success(f"✅ Inicio: Nodo {st.session_state.selected_start}")
+                else:
+                    st.warning("⚠️ Sin inicio")
+            
+            with col2:
+                if st.session_state.selected_end is not None:
+                    st.success(f"✅ Destino: Nodo {st.session_state.selected_end}")
+                else:
+                    st.warning("⚠️ Sin destino")
+            
+            # Botón para añadir vehículo
+            if st.session_state.selected_start is not None and st.session_state.selected_end is not None:
+                if st.button("➕ Añadir Vehículo", key="add_vehicle", use_container_width=True, type="primary"):
+                    st.session_state.vehicles.append({
+                        'start': st.session_state.selected_start,
+                        'end': st.session_state.selected_end
+                    })
+                    st.success(f"✅ Vehículo añadido: {st.session_state.selected_start} → {st.session_state.selected_end}")
+                    # Limpiar selección
+                    st.session_state.selected_start = None
+                    st.session_state.selected_end = None
+                    st.session_state.selection_mode = 'none'
+                    st.rerun()
             
             # Mostrar vehículos añadidos
             if st.session_state.vehicles:
-                st.markdown("**Vehículos configurados:**")
+                st.markdown("### 🚗 Vehículos Configurados")
                 for i, v in enumerate(st.session_state.vehicles):
-                    st.text(f"🚗 V{i+1}: {v['start']} → {v['end']}")
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.text(f"🚗 V{i+1}: Nodo {v['start']} → Nodo {v['end']}")
+                    with col2:
+                        if st.button("🗑️", key=f"delete_vehicle_{i}"):
+                            st.session_state.vehicles.pop(i)
+                            st.rerun()
                 
-                if st.button("🗑️ Limpiar Vehículos"):
+                if st.button("🗑️ Limpiar Todos", use_container_width=True):
                     st.session_state.vehicles = []
                     st.rerun()
     
@@ -512,33 +626,108 @@ with st.sidebar:
         if not st.session_state.city_map:
             st.warning("⚠️ Carga un mapa primero")
         else:
-            st.subheader("Bloquear Calle")
+            st.markdown("### 🚧 Bloquear Calles")
+            
+            # Botones de selección para bloqueo
             col1, col2 = st.columns(2)
             with col1:
-                block_start = st.number_input("Desde:", 0, key="block_start")
-            with col2:
-                block_end = st.number_input("Hasta:", 1, key="block_end")
+                if st.button("📍 Nodo 1", 
+                            use_container_width=True,
+                            type="primary" if st.session_state.selection_mode == 'block_start' else "secondary"):
+                    st.session_state.selection_mode = 'block_start'
+                    st.rerun()
             
-            if st.button("🚧 Bloquear"):
-                st.session_state.city_map.block_road_between_nodes(block_start, block_end)
-                st.session_state.blocked_roads.append((block_start, block_end))
-                st.success(f"Bloqueada: {block_start} ↔ {block_end}")
+            with col2:
+                if st.button("📍 Nodo 2", 
+                            use_container_width=True,
+                            type="primary" if st.session_state.selection_mode == 'block_end' else "secondary"):
+                    st.session_state.selection_mode = 'block_end'
+                    st.rerun()
+            
+            # Mostrar modo actual
+            if st.session_state.selection_mode == 'block_start':
+                st.info("🖱️ Click en el mapa para seleccionar el primer nodo")
+            elif st.session_state.selection_mode == 'block_end':
+                st.info("🖱️ Click en el mapa para seleccionar el segundo nodo")
+            
+            # Mostrar selección actual
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.session_state.temp_block_start is not None:
+                    st.success(f"Nodo 1: {st.session_state.temp_block_start}")
+                else:
+                    st.info("Sin selección")
+            
+            with col2:
+                block_end_val = st.session_state.get('temp_block_end', None)
+                if block_end_val is not None:
+                    st.success(f"Nodo 2: {block_end_val}")
+                else:
+                    st.info("Sin selección")
+            
+            # Botón para bloquear
+            if st.session_state.temp_block_start is not None and st.session_state.get('temp_block_end') is not None:
+                if st.button("🚧 Bloquear Calle", use_container_width=True, type="primary"):
+                    start = st.session_state.temp_block_start
+                    end = st.session_state.temp_block_end
+                    st.session_state.city_map.block_road_between_nodes(start, end)
+                    st.session_state.blocked_roads.append((start, end))
+                    st.success(f"Bloqueada: {start} ↔ {end}")
+                    # Limpiar
+                    st.session_state.temp_block_start = None
+                    st.session_state.temp_block_end = None
+                    st.session_state.selection_mode = 'none'
+                    st.rerun()
             
             st.markdown("---")
             
-            st.subheader("Añadir Tráfico")
-            traffic_center = st.number_input("Nodo Central:", 0, key="traffic_center")
-            traffic_radius = st.slider("Radio:", 1, 5, 2)
-            traffic_factor = st.slider("Factor:", 1.0, 5.0, 2.5, 0.5)
+            st.markdown("### 🚦 Añadir Tráfico")
             
-            if st.button("🚦 Añadir Tráfico"):
-                st.session_state.city_map.add_traffic_to_area(
-                    traffic_center,
-                    traffic_radius,
-                    traffic_factor
-                )
-                st.session_state.traffic_areas.append(traffic_center)
-                st.success(f"Tráfico añadido en nodo {traffic_center}")
+            # Botón para seleccionar centro de tráfico
+            if st.button("📍 Seleccionar Centro", 
+                        use_container_width=True,
+                        type="primary" if st.session_state.selection_mode == 'traffic' else "secondary"):
+                st.session_state.selection_mode = 'traffic'
+                st.rerun()
+            
+            if st.session_state.selection_mode == 'traffic':
+                st.info("🖱️ Click en el mapa para seleccionar el centro del área")
+            
+            # Parámetros de tráfico
+            col1, col2 = st.columns(2)
+            with col1:
+                traffic_radius = st.slider("Radio:", 1, 5, 2, key="traffic_radius")
+            with col2:
+                traffic_factor = st.slider("Factor:", 1.0, 5.0, 2.5, 0.5, key="traffic_factor")
+            
+            st.markdown("---")
+            
+            # Mostrar obstáculos creados
+            if st.session_state.blocked_roads:
+                st.markdown("**Calles Bloqueadas:**")
+                for i, (s, e) in enumerate(st.session_state.blocked_roads):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.text(f"🚧 {s} ↔ {e}")
+                    with col2:
+                        if st.button("✖️", key=f"unblock_{i}"):
+                            st.session_state.city_map.unblock_road_between_nodes(s, e)
+                            st.session_state.blocked_roads.pop(i)
+                            st.rerun()
+            
+            if st.session_state.traffic_areas:
+                st.markdown("**Áreas con Tráfico:**")
+                for i, node in enumerate(st.session_state.traffic_areas):
+                    st.text(f"🚦 Centro: Nodo {node}")
+            
+            if st.session_state.blocked_roads or st.session_state.traffic_areas:
+                if st.button("🗑️ Limpiar Obstáculos", use_container_width=True):
+                    # Limpiar bloqueos
+                    for s, e in st.session_state.blocked_roads:
+                        st.session_state.city_map.unblock_road_between_nodes(s, e)
+                    st.session_state.blocked_roads = []
+                    st.session_state.traffic_areas = []
+                    st.rerun()
     
     # Tab 4: Simulación
     with st.expander("▶️ **4. Ejecutar Simulación**", expanded=False):
@@ -593,6 +782,18 @@ with st.sidebar:
 st.header("🗺️ Visualización del Sistema")
 
 if st.session_state.city_map:
+    # Mostrar indicador del modo de selección actual
+    mode = st.session_state.selection_mode
+    if mode != 'none':
+        mode_messages = {
+            'start': '🎯 **Modo:** Seleccionar Nodo de INICIO',
+            'end': '🎯 **Modo:** Seleccionar Nodo de DESTINO',
+            'block_start': '🚧 **Modo:** Seleccionar Primer Nodo para Bloqueo',
+            'block_end': '🚧 **Modo:** Seleccionar Segundo Nodo para Bloqueo',
+            'traffic': '🚦 **Modo:** Seleccionar Centro de Área con Tráfico'
+        }
+        st.info(f"{mode_messages.get(mode, '')} - Click en un nodo del mapa")
+    
     # Crear y mostrar el mapa
     try:
         with st.spinner("🗺️ Generando mapa interactivo..."):
@@ -607,8 +808,64 @@ if st.session_state.city_map:
                     width=1400,
                     height=700,
                     returned_objects=["last_clicked"],
-                    key="main_map"
+                    key=f"main_map_{st.session_state.get('map_refresh', 0)}"  # Key dinámico para forzar refresh
                 )
+                
+                # MANEJAR CLICKS EN EL MAPA
+                if map_data and map_data.get("last_clicked"):
+                    clicked_lat = map_data["last_clicked"]["lat"]
+                    clicked_lng = map_data["last_clicked"]["lng"]
+                    
+                    # Encontrar el nodo más cercano
+                    nearest_node = find_nearest_node(st.session_state.city_map, clicked_lat, clicked_lng)
+                    
+                    if nearest_node is not None:
+                        mode = st.session_state.selection_mode
+                        
+                        # Manejar según el modo
+                        if mode == 'start':
+                            st.session_state.selected_start = nearest_node
+                            st.session_state.selection_mode = 'none'
+                            st.success(f"✅ Nodo de INICIO seleccionado: {nearest_node}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        
+                        elif mode == 'end':
+                            st.session_state.selected_end = nearest_node
+                            st.session_state.selection_mode = 'none'
+                            st.success(f"✅ Nodo de DESTINO seleccionado: {nearest_node}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        
+                        elif mode == 'block_start':
+                            st.session_state.temp_block_start = nearest_node
+                            st.session_state.selection_mode = 'none'
+                            st.success(f"✅ Primer nodo seleccionado: {nearest_node}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        
+                        elif mode == 'block_end':
+                            st.session_state.temp_block_end = nearest_node
+                            st.session_state.selection_mode = 'none'
+                            st.success(f"✅ Segundo nodo seleccionado: {nearest_node}")
+                            time.sleep(0.5)
+                            st.rerun()
+                        
+                        elif mode == 'traffic':
+                            # Añadir tráfico inmediatamente
+                            traffic_radius = st.session_state.get('traffic_radius', 2)
+                            traffic_factor = st.session_state.get('traffic_factor', 2.5)
+                            
+                            st.session_state.city_map.add_traffic_to_area(
+                                nearest_node,
+                                traffic_radius,
+                                traffic_factor
+                            )
+                            st.session_state.traffic_areas.append(nearest_node)
+                            st.session_state.selection_mode = 'none'
+                            st.success(f"✅ Tráfico añadido en nodo {nearest_node}")
+                            time.sleep(0.5)
+                            st.rerun()
             else:
                 st.error("❌ No se pudo crear el mapa")
     except Exception as e:
@@ -657,21 +914,54 @@ if st.session_state.city_map:
 else:
     st.info("👈 Carga un mapa desde el panel izquierdo para comenzar")
     
-    # Mostrar ejemplo
+    # Mostrar ejemplo con instrucciones mejoradas
     st.markdown("""
     ### 📖 Guía Rápida
     
-    1. **🗺️ Cargar Mapa**: Elige un lugar por nombre o coordenadas
-    2. **🚗 Añadir Vehículos**: Define rutas de inicio a destino
-    3. **🚧 Obstáculos (Opcional)**: Bloquea calles o añade tráfico
-    4. **▶️ Simular**: Ejecuta el algoritmo ACO
-    5. **📊 Analizar**: Visualiza rutas y estadísticas
+    #### 1. 🗺️ **Cargar Mapa**
+    - Elige un lugar por nombre (ej: "Trujillo, Peru") o coordenadas
+    - Selecciona el nivel de detalle (más detalle = más lento)
+    - Click en "Cargar Mapa"
     
-    ### 🎯 Ejemplos de Lugares
-    - Trujillo, Peru
-    - Lima, Peru  
-    - Arequipa, Peru
-    - San Isidro, Lima, Peru
+    #### 2. 🚗 **Añadir Vehículos**
+    - Click en "📍 Seleccionar INICIO" en el panel izquierdo
+    - Click en un nodo azul del mapa para elegir el inicio
+    - Click en "🎯 Seleccionar DESTINO"
+    - Click en otro nodo del mapa para el destino
+    - Click en "➕ Añadir Vehículo"
+    
+    #### 3. 🚧 **Obstáculos (Opcional)**
+    - **Bloquear calle:** Selecciona dos nodos consecutivos
+    - **Añadir tráfico:** Selecciona un nodo central y define el radio
+    
+    #### 4. ▶️ **Simular**
+    - Ajusta las iteraciones y parámetros ACO
+    - Click en "▶️ EJECUTAR SIMULACIÓN"
+    
+    #### 5. 📊 **Analizar**
+    - Visualiza las rutas encontradas en el mapa
+    - Revisa estadísticas de rendimiento
+    
+    ---
+    
+    ### 🎯 Consejos
+    
+    - **Nodos azules grandes** = Intersecciones importantes
+    - **Nodos azules pequeños** = Intersecciones normales
+    - **Nodos rojos** = Nodos seleccionados actualmente
+    - Usa el control de capas (esquina superior derecha) para mostrar/ocultar elementos
+    - Activa la capa "📍 Intersecciones" para ver todos los nodos disponibles
+    
+    ### 🌍 Ejemplos de Lugares
+    - **Perú:** Trujillo, Lima, Arequipa, Cusco, San Isidro
+    - **Internacional:** Madrid, España | Paris, France | New York, USA
+    """)
+    
+    # Advertencia sobre rendimiento
+    st.warning("""
+    ⚠️ **Nota de Rendimiento:** 
+    Mapas grandes (>3000 intersecciones) pueden tardar en cargar. 
+    Usa el nivel de detalle "Bajo" o "Medio" para mejor rendimiento.
     """)
 
 # Footer
